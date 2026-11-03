@@ -46,13 +46,14 @@ button{
   cursor:pointer;
 }
 .progress{height:8px;background:#ddd;border-radius:10px;margin-top:10px;overflow:hidden}
-.bar{height:100%;width:0%;background:#2563eb}
+.bar{height:100%;width:0%;background:#2563eb;transition:width .3s}
 canvas{display:none}
 </style>
 </head>
 <body>
 
 <h1 style="position:absolute; top:20px; left:0; width:100%; margin:0; text-align:center">Hi There! Welcome to the PDF Watermark Remover</h1>
+
 <div class="container">
 <h2>PDF Watermark Remover </h2>
 
@@ -87,20 +88,33 @@ const ctx=canvas.getContext("2d");
 const downloadLink=document.getElementById("downloadLink");
 
 // Drag & Drop
- dropzone.onclick=()=>input.click();
- dropzone.ondragover=e=>{e.preventDefault();dropzone.style.opacity=.6};
- dropzone.ondragleave=()=>dropzone.style.opacity=1;
- dropzone.ondrop=e=>{
-   e.preventDefault();
-   input.files=e.dataTransfer.files;
-   dropzone.style.opacity=1;
- };
+function fileSelected(){
+  const f=input.files[0];
+  if(!f) return;
+  status.innerText="File loaded: "+f.name+" - click Clean PDF";
+  bar.style.background="#16a34a";
+  bar.style.width="100%";
+  downloadLink.style.display="none";
+}
+dropzone.onclick=()=>input.click();
+input.onchange=fileSelected;
+dropzone.ondragover=e=>{e.preventDefault();dropzone.style.opacity=.6};
+dropzone.ondragleave=()=>dropzone.style.opacity=1;
+dropzone.ondrop=e=>{
+  e.preventDefault();
+  input.files=e.dataTransfer.files;
+  dropzone.style.opacity=1;
+  fileSelected();
+};
 
 btn.onclick=async()=>{
  if(!input.files[0]){
    alert("Upload PDF first");
    return;
  }
+
+ bar.style.background="#2563eb";
+ bar.style.width="10%";
 
  const buffer=await input.files[0].arrayBuffer();
 
@@ -128,6 +142,24 @@ async function tryStructuralRemoval(buffer){
 
    let removedSomething=false;
 
+   // Watermarks repeat on (almost) every page, while real pictures usually
+   // appear on one page only. So count how many pages use each object.
+   const usage = {};
+   pages.forEach(page=>{
+     const dict = page.node.Resources();
+     if(!dict) return;
+     const xObject = dict.lookup(PDFLib.PDFName.of('XObject'));
+     if(!xObject) return;
+     xObject.keys().forEach(key=>{
+       const ref = xObject.get(key);
+       if(!(ref instanceof PDFLib.PDFRef)) return;
+       const id = ref.toString();
+       usage[id] = (usage[id] || 0) + 1;
+     });
+   });
+
+   const minPages = Math.max(2, Math.ceil(pages.length * 0.6));
+
    pages.forEach(page=>{
      const dict = page.node.Resources();
      if(!dict) return;
@@ -135,11 +167,14 @@ async function tryStructuralRemoval(buffer){
      const xObject = dict.lookup(PDFLib.PDFName.of('XObject'));
      if(!xObject) return;
 
-     const keys = xObject.keys();
-     keys.forEach(key=>{
-       // heuristic: remove large background objects
-       removedSomething=true;
-       xObject.delete(key);
+     xObject.keys().forEach(key=>{
+       const ref = xObject.get(key);
+       if(!(ref instanceof PDFLib.PDFRef)) return;
+       // only remove objects repeated across most pages
+       if(usage[ref.toString()] >= minPages){
+         removedSomething=true;
+         xObject.delete(key);
+       }
      });
    });
 
