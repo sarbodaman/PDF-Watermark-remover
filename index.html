@@ -65,9 +65,9 @@ Click, upload or Drag PDF Here
 <button id="processBtn">Clean PDF</button>
 
 <div class="progress"><div class="bar" id="bar"></div></div>
-<p id="status">Waiting for thefile...</p>
+<p id="status">Waiting for the file...</p>
 
-<a id="downloadLink" style="display:none" download="cleaned.pdf">
+<a id="downloadLink" style="display:none" download>
 <button>Download Cleaned PDF</button>
 </a>
 
@@ -87,10 +87,19 @@ const canvas=document.getElementById("canvas");
 const ctx=canvas.getContext("2d");
 const downloadLink=document.getElementById("downloadLink");
 
+// Sets download name to: originalname_cleaned.pdf
+function setDownloadName(){
+  const f=input.files[0];
+  if(!f) return;
+  const baseName=f.name.replace(/\.pdf$/i,"");
+  downloadLink.download=baseName+"_cleaned.pdf";
+}
+
 // Drag & Drop
 function fileSelected(){
   const f=input.files[0];
   if(!f) return;
+  setDownloadName();
   status.innerText="File loaded: "+f.name+" - click Clean PDF";
   bar.style.background="#16a34a";
   bar.style.width="100%";
@@ -112,6 +121,8 @@ btn.onclick=async()=>{
    alert("Upload PDF first");
    return;
  }
+
+ setDownloadName();
 
  bar.style.background="#2563eb";
  bar.style.width="10%";
