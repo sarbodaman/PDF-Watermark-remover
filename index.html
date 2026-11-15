@@ -4,12 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PDF watermark remover simple</title>
-  <link rel="icon" type="image/x-icon" href="favicon.png">
+<link rel="icon" type="image/x-icon" href="favicon.png">
 
 <!-- PDF.js -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <!-- PDF-Lib -->
 <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
+<!-- jsPDF -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<!-- JSZip -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <style>
 body{
@@ -20,6 +24,8 @@ body{
   align-items:center;
   min-height:100vh;
   margin:0;
+  padding:80px 0 20px;
+  box-sizing:border-box;
 }
 .container{
   background:white;
@@ -45,9 +51,23 @@ button{
   color:white;
   cursor:pointer;
 }
+button:disabled{background:#94a3b8;cursor:not-allowed}
 .progress{height:8px;background:#ddd;border-radius:10px;margin-top:10px;overflow:hidden}
 .bar{height:100%;width:0%;background:#2563eb;transition:width .3s}
 canvas{display:none}
+hr{border:none;border-top:1px solid #e2e8f0;margin:28px 0 18px}
+.section-title{margin:0 0 12px}
+#fileList{
+  text-align:left;
+  font-size:13px;
+  max-height:140px;
+  overflow:auto;
+  margin:10px 0 0;
+  padding:0 0 0 20px;
+}
+#fileList li{margin:2px 0;word-break:break-all}
+#fileList li.ok{color:#16a34a}
+#fileList li.fail{color:#dc2626}
 </style>
 </head>
 <body>
@@ -55,7 +75,9 @@ canvas{display:none}
 <h1 style="position:absolute; top:20px; left:0; width:100%; margin:0; text-align:center">Hi There! Welcome to a simple PDF Watermark Remover</h1>
 
 <div class="container">
-<h2>PDF Watermark Remover engine </h2>
+
+<!-- ================= SINGLE UPLOAD ================= -->
+<h2 class="section-title">PDF Watermark Remover engine </h2>
 
 <div class="dropzone" id="dropzone">
 Click, Upload or Drag PDF Here
@@ -71,6 +93,26 @@ Click, Upload or Drag PDF Here
 <button>Download Cleaned PDF file </button>
 </a>
 
+<!-- ================= BULK UPLOAD ================= -->
+<hr>
+<h2 class="section-title">Bulk Removal (multiple PDFs)</h2>
+
+<div class="dropzone" id="bulkDropzone">
+Click, Upload or Drag multiple PDFs Here
+<input type="file" id="bulkInput" accept="application/pdf" multiple hidden>
+</div>
+
+<ol id="fileList"></ol>
+
+<button id="bulkBtn">Clean all uploaded PDFs</button>
+
+<div class="progress"><div class="bar" id="bulkBar"></div></div>
+<p id="bulkStatus">Waiting for the files...</p>
+
+<a id="bulkDownloadLink" style="display:none" download>
+<button id="bulkDownloadBtn">Download Cleaned PDFs (ZIP)</button>
+</a>
+
 <canvas id="canvas"></canvas>
 </div>
 
@@ -78,69 +120,47 @@ Click, Upload or Drag PDF Here
 pdfjsLib.GlobalWorkerOptions.workerSrc=
 "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
+const canvas=document.getElementById("canvas");
+const ctx=canvas.getContext("2d");
+
+// Single-upload elements
 const input=document.getElementById("pdfInput");
 const dropzone=document.getElementById("dropzone");
 const btn=document.getElementById("processBtn");
 const status=document.getElementById("status");
 const bar=document.getElementById("bar");
-const canvas=document.getElementById("canvas");
-const ctx=canvas.getContext("2d");
 const downloadLink=document.getElementById("downloadLink");
 
-// Sets download name to: originalname_cleaned.pdf
-function setDownloadName(){
-  const f=input.files[0];
-  if(!f) return;
-  const baseName=f.name.replace(/\.pdf$/i,"");
-  downloadLink.download=baseName+"_cleaned.pdf";
+// Bulk-upload elements
+const bulkInput=document.getElementById("bulkInput");
+const bulkDropzone=document.getElementById("bulkDropzone");
+const bulkBtn=document.getElementById("bulkBtn");
+const bulkStatus=document.getElementById("bulkStatus");
+const bulkBar=document.getElementById("bulkBar");
+const bulkDownloadLink=document.getElementById("bulkDownloadLink");
+const bulkDownloadBtn=document.getElementById("bulkDownloadBtn");
+const fileList=document.getElementById("fileList");
+
+let busy=false; // canvas is shared, so only one job at a time
+
+function baseName(name){ return name.replace(/\.pdf$/i,""); }
+
+// ===============================
+// CORE ENGINE (used by both modes)
+// Returns {blob, method} — throws on failure.
+// onProgress(fraction 0..1, text)
+// ===============================
+async function cleanPDF(buffer, onProgress){
+  onProgress(0.05,"Analyzing PDF structure...");
+  const structural = await tryStructuralRemoval(buffer);
+  if(structural){
+    onProgress(1,"Structural cleaning successful (Text preserved).");
+    return {blob:structural, method:"structural"};
+  }
+  onProgress(0.1,"Switching to visual cleaning...");
+  const visual = await visualCleaning(buffer, onProgress);
+  return {blob:visual, method:"visual"};
 }
-
-// Drag & Drop
-function fileSelected(){
-  const f=input.files[0];
-  if(!f) return;
-  setDownloadName();
-  status.innerText="File loaded: "+f.name+" - click Clean PDF";
-  bar.style.background="#16a34a";
-  bar.style.width="100%";
-  downloadLink.style.display="none";
-}
-dropzone.onclick=()=>input.click();
-input.onchange=fileSelected;
-dropzone.ondragover=e=>{e.preventDefault();dropzone.style.opacity=.6};
-dropzone.ondragleave=()=>dropzone.style.opacity=1;
-dropzone.ondrop=e=>{
-  e.preventDefault();
-  input.files=e.dataTransfer.files;
-  dropzone.style.opacity=1;
-  fileSelected();
-};
-
-btn.onclick=async()=>{
- if(!input.files[0]){
-   alert("Upload PDF first");
-   return;
- }
-
- setDownloadName();
-
- bar.style.background="#2563eb";
- bar.style.width="10%";
-
- const buffer=await input.files[0].arrayBuffer();
-
- status.innerText="Analyzing PDF structure...";
-
- const useStructural = await tryStructuralRemoval(buffer);
-
- if(useStructural){
-   status.innerText="Structural cleaning successful (Text preserved).";
-   return;
- }
-
- status.innerText="Switching to visual cleaning...";
- await visualCleaning(buffer);
-};
 
 // ===============================
 // METHOD 1 — STRUCTURAL CLEANING
@@ -189,33 +209,27 @@ async function tryStructuralRemoval(buffer){
      });
    });
 
-   if(!removedSomething) return false;
+   if(!removedSomething) return null;
 
    const pdfBytes = await pdfDoc.save();
-   const blob=new Blob([pdfBytes],{type:"application/pdf"});
-   const url=URL.createObjectURL(blob);
-
-   downloadLink.href=url;
-   downloadLink.style.display="inline-block";
-   bar.style.width="100%";
-   return true;
+   return new Blob([pdfBytes],{type:"application/pdf"});
 
  }catch(e){
    console.log("Structural removal failed",e);
-   return false;
+   return null;
  }
 }
 
 // ===============================
 // METHOD 2 — VISUAL CLEANING
 // ===============================
-async function visualCleaning(buffer){
- const pdf=await pdfjsLib.getDocument({data:buffer}).promise;
- const images=[];
+async function visualCleaning(buffer, onProgress){
+ const pdf=await pdfjsLib.getDocument({data:buffer.slice(0)}).promise;
+ let doc=null;
+ const {jsPDF}=window.jspdf;
 
  for(let p=1;p<=pdf.numPages;p++){
-   status.innerText=`Processing page ${p}/${pdf.numPages}`;
-   bar.style.width=((p/pdf.numPages)*100)+"%";
+   onProgress(0.1+0.85*((p-1)/pdf.numPages),`Processing page ${p}/${pdf.numPages}`);
 
    const page=await pdf.getPage(p);
    const viewport=page.getViewport({scale:2});
@@ -238,32 +252,213 @@ async function visualCleaning(buffer){
    }
 
    ctx.putImageData(img,0,0);
-   images.push(canvas.toDataURL("image/jpeg",1));
+   const jpg=canvas.toDataURL("image/jpeg",1);
+
+   // keep each page's original size/orientation
+   const w=viewport.width/2, h=viewport.height/2; // points (scale was 2)
+   const orient=w>h?"l":"p";
+   if(!doc){
+     doc=new jsPDF({orientation:orient,unit:"pt",format:[w,h]});
+   }else{
+     doc.addPage([w,h],orient);
+   }
+   doc.addImage(jpg,"JPEG",0,0,w,h);
  }
 
- const script=document.createElement("script");
- script.src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
- script.onload=()=>buildPDF(images);
- document.body.appendChild(script);
+ onProgress(1,"Visual cleaning complete.");
+ return doc.output("blob");
 }
 
-async function buildPDF(images){
- const {jsPDF}=window.jspdf;
- const pdf=new jsPDF();
-
- images.forEach((img,i)=>{
-   if(i!==0) pdf.addPage();
-   pdf.addImage(img,"JPEG",0,0,210,297);
- });
-
- const blob=pdf.output("blob");
- const url=URL.createObjectURL(blob);
-
- downloadLink.href=url;
- downloadLink.style.display="inline-block";
- status.innerText="Visual cleaning complete.";
- bar.style.width="100%";
+// ===============================
+// SINGLE UPLOAD UI
+// ===============================
+function setDownloadName(){
+  const f=input.files[0];
+  if(!f) return;
+  downloadLink.download=baseName(f.name)+"_cleaned.pdf";
 }
+
+function fileSelected(){
+  const f=input.files[0];
+  if(!f) return;
+  setDownloadName();
+  status.innerText="File loaded: "+f.name+" - click Clean PDF";
+  bar.style.background="#16a34a";
+  bar.style.width="100%";
+  downloadLink.style.display="none";
+}
+dropzone.onclick=()=>input.click();
+input.onchange=fileSelected;
+dropzone.ondragover=e=>{e.preventDefault();dropzone.style.opacity=.6};
+dropzone.ondragleave=()=>dropzone.style.opacity=1;
+dropzone.ondrop=e=>{
+  e.preventDefault();
+  input.files=e.dataTransfer.files;
+  dropzone.style.opacity=1;
+  fileSelected();
+};
+
+btn.onclick=async()=>{
+ if(!input.files[0]){
+   alert("Upload PDF first");
+   return;
+ }
+ if(busy){ alert("Another job is running, please wait."); return; }
+ busy=true; btn.disabled=true;
+
+ setDownloadName();
+ downloadLink.style.display="none";
+ bar.style.background="#2563eb";
+ bar.style.width="10%";
+
+ try{
+   const buffer=await input.files[0].arrayBuffer();
+   const {blob,method}=await cleanPDF(buffer,(frac,text)=>{
+     status.innerText=text;
+     bar.style.width=Math.round(frac*100)+"%";
+   });
+   if(downloadLink.dataset.url) URL.revokeObjectURL(downloadLink.dataset.url);
+   const url=URL.createObjectURL(blob);
+   downloadLink.dataset.url=url;
+   downloadLink.href=url;
+   downloadLink.style.display="inline-block";
+   bar.style.width="100%";
+   status.innerText = method==="structural"
+     ? "Structural cleaning successful (Text preserved)."
+     : "Visual cleaning complete.";
+ }catch(e){
+   console.error(e);
+   status.innerText="Could not process this PDF: "+e.message;
+   bar.style.background="#dc2626";
+ }finally{
+   busy=false; btn.disabled=false;
+ }
+};
+
+// ===============================
+// BULK UPLOAD UI
+// ===============================
+let bulkFiles=[];
+
+function renderFileList(states){
+  fileList.innerHTML="";
+  bulkFiles.forEach((f,i)=>{
+    const li=document.createElement("li");
+    li.textContent=f.name+(states&&states[i]?" — "+states[i].text:"");
+    if(states&&states[i]) li.className=states[i].cls;
+    fileList.appendChild(li);
+  });
+}
+
+function bulkSelected(fileListObj){
+  bulkFiles=Array.from(fileListObj).filter(f=>
+    f.type==="application/pdf" || /\.pdf$/i.test(f.name));
+  bulkDownloadLink.style.display="none";
+  bulkBar.style.background="#16a34a";
+  if(!bulkFiles.length){
+    bulkStatus.innerText="No PDF files found in your selection.";
+    bulkBar.style.width="0%";
+    renderFileList();
+    return;
+  }
+  bulkBar.style.width="100%";
+  bulkStatus.innerText=bulkFiles.length+" PDF file(s) loaded - click Clean all";
+  renderFileList();
+}
+
+bulkDropzone.onclick=()=>bulkInput.click();
+bulkInput.onchange=()=>bulkSelected(bulkInput.files);
+bulkDropzone.ondragover=e=>{e.preventDefault();bulkDropzone.style.opacity=.6};
+bulkDropzone.ondragleave=()=>bulkDropzone.style.opacity=1;
+bulkDropzone.ondrop=e=>{
+  e.preventDefault();
+  bulkDropzone.style.opacity=1;
+  bulkSelected(e.dataTransfer.files);
+};
+
+// make sure two files never share a name inside the ZIP
+function uniqueName(name,used){
+  let n=name, k=2;
+  while(used.has(n.toLowerCase())){
+    n=name.replace(/\.pdf$/i,"")+" ("+k+").pdf";
+    k++;
+  }
+  used.add(n.toLowerCase());
+  return n;
+}
+
+function triggerLink(link,blob,filename,prevUrl){
+  if(prevUrl) URL.revokeObjectURL(prevUrl);
+  const url=URL.createObjectURL(blob);
+  link.href=url;
+  link.download=filename;
+  link.style.display="inline-block";
+  return url;
+}
+
+let bulkUrl=null;
+
+bulkBtn.onclick=async()=>{
+  if(!bulkFiles.length){
+    alert("Upload PDF files first");
+    return;
+  }
+  if(busy){ alert("Another job is running, please wait."); return; }
+  busy=true; bulkBtn.disabled=true;
+  bulkDownloadLink.style.display="none";
+  bulkBar.style.background="#2563eb";
+  bulkBar.style.width="0%";
+
+  const total=bulkFiles.length;
+  const states=[];
+  const results=[]; // {name, blob}
+  const used=new Set();
+
+  for(let i=0;i<total;i++){
+    const f=bulkFiles[i];
+    states[i]={text:"processing...",cls:""};
+    renderFileList(states);
+    try{
+      const buffer=await f.arrayBuffer();
+      const {blob,method}=await cleanPDF(buffer,(frac,text)=>{
+        bulkStatus.innerText=`File ${i+1}/${total}: ${f.name} — ${text}`;
+        bulkBar.style.width=Math.round(((i+frac)/total)*100)+"%";
+      });
+      results.push({name:uniqueName(baseName(f.name)+"_cleaned.pdf",used),blob});
+      states[i]={text:"done ("+method+")",cls:"ok"};
+    }catch(e){
+      console.error(f.name,e);
+      states[i]={text:"failed: "+e.message,cls:"fail"};
+    }
+    renderFileList(states);
+  }
+
+  bulkBar.style.width="100%";
+
+  if(!results.length){
+    bulkStatus.innerText="None of the files could be processed.";
+    bulkBar.style.background="#dc2626";
+  }else{
+    const failed=total-results.length;
+    const note=failed?` (${failed} failed)`:"";
+    if(results.length===1){
+      // single result -> plain PDF, no zip
+      bulkUrl=triggerLink(bulkDownloadLink,results[0].blob,results[0].name,bulkUrl);
+      bulkDownloadBtn.innerText="Download Cleaned PDF file";
+      bulkStatus.innerText="Done."+note;
+    }else{
+      bulkStatus.innerText="Creating ZIP...";
+      const zip=new JSZip();
+      results.forEach(r=>zip.file(r.name,r.blob));
+      const zipBlob=await zip.generateAsync({type:"blob"});
+      bulkUrl=triggerLink(bulkDownloadLink,zipBlob,"cleaned_pdfs.zip",bulkUrl);
+      bulkDownloadBtn.innerText="Download Cleaned PDFs (ZIP)";
+      bulkStatus.innerText="Done — "+results.length+" files cleaned."+note;
+    }
+  }
+
+  busy=false; bulkBtn.disabled=false;
+};
 </script>
 </body>
 </html>
